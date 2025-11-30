@@ -1,0 +1,10 @@
+<div class="layout">
+  <app-sidebar class="sidebar"></app-sidebar>
+  <div class="content-area">
+    <app-topbar (themeToggle)="toggleTheme()"></app-topbar>
+    <main class="page-frame">
+      <router-outlet></router-outlet>
+    </main>
+  </div>
+  <div class="backdrop"></div>
+</div>
