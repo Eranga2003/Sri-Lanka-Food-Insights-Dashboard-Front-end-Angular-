@@ -1,17 +1,176 @@
 <section class="page">
-  <mat-card class="page-card">
-    <div class="page-header">
-      <div>
-        <p class="eyebrow">Admin Data Entry</p>
-        <h1>Food Manufacturing</h1>
-        <p class="lede">
-          Capture monthly production by province to power KPI cards, maps, and charts.
-        </p>
-      </div>
+  <div class="page-header">
+    <div>
+      <p class="eyebrow">Food Manufacturing</p>
+      <h1>Provincial production pulse</h1>
+      <p class="lede">
+        Track how each province performs by food type, month, and target attainment across Sri Lanka.
+      </p>
+    </div>
+    <div class="header-actions">
+      <button class="ghost-btn">Export snapshot</button>
       <button mat-raised-button color="primary">Add new record</button>
     </div>
-    <div class="placeholder">
-      Form coming next: year, month, province, productions, targets, province status.
+  </div>
+
+  <div class="card kpi-grid">
+    <div class="kpi-card" *ngFor="let kpi of kpis">
+      <p class="kpi-label">{{ kpi.label }}</p>
+      <div class="kpi-value-row">
+        <span class="kpi-value">{{ kpi.value }}</span>
+        <span class="kpi-change" [class.positive]="kpi.change.startsWith('+')">
+          {{ kpi.change }}
+        </span>
+      </div>
+      <p class="kpi-hint">{{ kpi.hint }}</p>
     </div>
-  </mat-card>
+  </div>
+
+  <div class="grid two-col">
+    <div class="card map-card">
+      <div class="card-header">
+        <div>
+          <p class="eyebrow">Sri Lanka map</p>
+          <h2>Production by province</h2>
+        </div>
+        <div class="legend">
+          <span><span class="dot ok"></span>Green = OK</span>
+          <span><span class="dot medium"></span>Yellow = Medium</span>
+          <span><span class="dot low"></span>Red = Low</span>
+        </div>
+      </div>
+      <div class="province-grid">
+        <button
+          type="button"
+          class="province-chip"
+          *ngFor="let province of provinces"
+          [class.ok]="province.status === 'ok'"
+          [class.medium]="province.status === 'medium'"
+          [class.low]="province.status === 'low'"
+          [class.active]="province.name === selectedProvinceName"
+          (click)="selectProvince(province.name)"
+        >
+          <span class="name">{{ province.name }}</span>
+          <span class="production">{{ province.production | number }} t</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="card details-card">
+      <div class="card-header">
+        <div>
+          <p class="eyebrow">Province details</p>
+          <h2>{{ selectedProvince.name }}</h2>
+          <p class="lede">{{ selectedProvince.sentiment }}</p>
+        </div>
+        <span class="pill">{{ selectedProvince.changeText }}</span>
+      </div>
+      <div class="table">
+        <div class="table-head">
+          <span>Food type</span>
+          <span class="right">This month</span>
+          <span class="right">Last month</span>
+          <span class="right">Change</span>
+        </div>
+        <div class="table-row" *ngFor="let item of selectedProvince.breakdown">
+          <span class="cell-label">{{ item.type }}</span>
+          <span class="right">{{ item.current | number }} t</span>
+          <span class="right">{{ item.last | number }} t</span>
+          <span class="right change" [class.up]="item.current >= item.last" [class.down]="item.current < item.last">
+            <span class="material-symbols-outlined">
+              {{ item.current >= item.last ? 'trending_up' : 'trending_down' }}
+            </span>
+            {{
+              ((item.current - item.last) / item.last) * 100
+                | number : '1.0-1'
+            }}%
+          </span>
+        </div>
+      </div>
+      <p class="microcopy">
+        Tap a province on the map to switch this panel. Small arrow shows direction of change month over month.
+      </p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header controls">
+      <div>
+        <p class="eyebrow">Province comparison</p>
+        <h2>Bar chart by province</h2>
+      </div>
+      <div class="segmented">
+        <button
+          *ngFor="let month of months"
+          type="button"
+          [class.active]="month === selectedMonth"
+          (click)="setMonth(month)"
+        >
+          {{ month }}
+        </button>
+      </div>
+      <div class="segmented">
+        <button
+          *ngFor="let type of foodTypes"
+          type="button"
+          [class.active]="type === selectedFoodType"
+          (click)="setFoodType(type)"
+        >
+          {{ type }}
+        </button>
+      </div>
+    </div>
+    <div class="bar-chart">
+      <div class="bar-row" *ngFor="let item of provinceComparisons[selectedFoodType]">
+        <div class="label">
+          <span class="name">{{ item.province }}</span>
+          <span class="target">Target {{ item.target }} kt</span>
+        </div>
+        <div class="bar-track">
+          <div class="bar" [style.width]="barWidth(item.value)">
+            <span class="value">{{ item.value }} kt</span>
+          </div>
+          <div class="gap" [style.width]="gapWidth(item)" *ngIf="item.value < item.target">
+            Gap {{ item.target - item.value }} kt
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card target-card">
+    <div class="card-header">
+      <div>
+        <p class="eyebrow">Target vs actual</p>
+        <h2>Close the production gap</h2>
+      </div>
+      <p class="lede">
+        Compare against monthly targets to see where to boost resources.
+      </p>
+    </div>
+    <div class="target-grid">
+      <div class="target-item" *ngFor="let item of targetVsActual">
+        <div class="target-head">
+          <span class="label">{{ item.label }}</span>
+          <span class="pill subtle">Gap {{ targetGap(item) }} kt</span>
+        </div>
+        <div class="target-bars">
+          <div class="target-bar">
+            <span>Target</span>
+            <div class="track">
+              <div class="fill target" [style.width]="barWidth(item.target)"></div>
+            </div>
+            <span class="value">{{ item.target }} kt</span>
+          </div>
+          <div class="target-bar">
+            <span>Actual</span>
+            <div class="track">
+              <div class="fill actual" [style.width]="barWidth(item.actual)"></div>
+            </div>
+            <span class="value">{{ item.actual }} kt</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 </section>

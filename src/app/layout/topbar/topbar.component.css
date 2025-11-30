@@ -375,13 +375,6 @@
   animation: none;
   transform: scale(1.15);
 }
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  animation: fadeIn 0.8s ease-out 0.4s both;
-}
 
 .quick-filters {
   display: flex;
@@ -461,6 +454,8 @@
   justify-content: flex-end;
   animation: fadeIn 0.8s ease-out 0.4s both;
 }
+
+.divider {
   width: 1px;
   height: 36px;
   background: linear-gradient(to bottom, transparent, rgba(34, 197, 94, 0.25), transparent);
@@ -528,6 +523,8 @@
 .badge {
   position: relative;
 }
+
+.badge::after {
   content: '';
   position: absolute;
   top: 6px;
