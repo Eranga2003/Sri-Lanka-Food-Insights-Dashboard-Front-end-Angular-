@@ -1,6 +1,7 @@
 import { CommonModule } from '@angular/common';
 import { Component, EventEmitter, Output } from '@angular/core';
 import { FormsModule, NgForm } from '@angular/forms';
+import { Firestore, addDoc, collection, serverTimestamp } from '@angular/fire/firestore';
 
 export type ProvinceHealth = 'GOOD' | 'MEDIUM' | 'LOW';
 
@@ -170,10 +171,12 @@ export interface NewProductionRecord {
 
           <div class="actions">
             <button type="button" class="ghost" (click)="onClose()">Cancel</button>
-            <button type="submit" class="primary" [disabled]="recordForm.invalid">
-              Save record
+            <button type="submit" class="primary" [disabled]="recordForm.invalid || submitting">
+              {{ submitting ? 'Saving...' : 'Save record' }}
             </button>
           </div>
+          <p class="success" *ngIf="successMessage">{{ successMessage }}</p>
+          <p class="error" *ngIf="errorMessage">{{ errorMessage }}</p>
         </form>
       </div>
     </div>
@@ -345,6 +348,18 @@ export interface NewProductionRecord {
         opacity: 0.6;
         cursor: not-allowed;
       }
+
+      .error {
+        color: #b91c1c;
+        margin: 8px 0 0;
+        font-weight: 600;
+      }
+
+      .success {
+        color: #0f9d58;
+        margin: 8px 0 0;
+        font-weight: 700;
+      }
     `,
   ],
 })
@@ -394,15 +409,50 @@ export class AddProductionRecordDialogComponent {
 
   @Output() close = new EventEmitter<void>();
   @Output() save = new EventEmitter<NewProductionRecord>();
+  submitting = false;
+  errorMessage = '';
+  successMessage = '';
+
+  constructor(private readonly firestore: Firestore) {}
 
   onClose(): void {
     this.close.emit();
   }
 
-  onSubmit(form: NgForm): void {
+  async onSubmit(form: NgForm): Promise<void> {
     if (form.invalid) {
       return;
     }
-    this.save.emit({ ...this.form });
+    this.submitting = true;
+    this.errorMessage = '';
+    this.successMessage = '';
+
+    try {
+      const payload = {
+        ...this.form,
+        riceProduction: this.toNumber(this.form.riceProduction),
+        vegetableProduction: this.toNumber(this.form.vegetableProduction),
+        milkProduction: this.toNumber(this.form.milkProduction),
+        childFoodProduction: this.toNumber(this.form.childFoodProduction),
+        riceTarget: this.toNumber(this.form.riceTarget),
+        vegetableTarget: this.toNumber(this.form.vegetableTarget),
+        milkTarget: this.toNumber(this.form.milkTarget),
+        childFoodTarget: this.toNumber(this.form.childFoodTarget),
+        createdAt: serverTimestamp(),
+      };
+      await addDoc(collection(this.firestore, 'productionRecords'), payload);
+      this.successMessage = 'Record saved successfully.';
+      this.save.emit({ ...this.form });
+      setTimeout(() => this.onClose(), 900);
+    } catch (error) {
+      console.error('Failed to save production record', error);
+      this.errorMessage = 'Unable to save record. Please try again.';
+    } finally {
+      this.submitting = false;
+    }
+  }
+
+  private toNumber(value: number | null): number | null {
+    return value === null ? null : Number(value);
   }
 }

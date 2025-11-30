@@ -1,5 +1,7 @@
-import { CommonModule } from '@angular/common';
+import { CommonModule, AsyncPipe, DatePipe } from '@angular/common';
 import { Component } from '@angular/core';
+import { collection, collectionData, Firestore } from '@angular/fire/firestore';
+import { BehaviorSubject, combineLatest, map, Observable } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
 import {
@@ -9,17 +11,95 @@ import {
 
 type FoodType = 'Rice' | 'Vegetables' | 'Milk' | 'Child food';
 
+interface ProductionRecordDoc extends NewProductionRecord {
+  id?: string;
+  createdAt?: { toDate?: () => Date } | null;
+}
+
+interface ProvinceCard {
+  name: string;
+  statusClass: 'ok' | 'medium' | 'low';
+  production: number;
+}
+
+interface ProvinceBreakdown {
+  name: string;
+  sentiment: string;
+  changeText: string;
+  breakdown: { type: FoodType; current: number; last: number }[];
+}
+
+interface ComparisonItem {
+  province: string;
+  value: number;
+  target: number;
+}
+
+interface TargetItem {
+  label: FoodType;
+  target: number;
+  actual: number;
+}
+
+interface ViewModel {
+  months: string[];
+  month: string | null;
+  provinceCards: ProvinceCard[];
+  provinceBreakdowns: ProvinceBreakdown[];
+  comparisons: Record<FoodType, ComparisonItem[]>;
+  targetVsActual: TargetItem[];
+  totalProduction: number;
+  topProvince?: string;
+  topProvinceValue?: number;
+  belowTargetCount: number;
+  avgTargetAchievement: number;
+}
+
 @Component({
   selector: 'app-food-manufacturing',
   standalone: true,
-  imports: [CommonModule, MatCardModule, MatButtonModule, AddProductionRecordDialogComponent],
+  imports: [
+    CommonModule,
+    MatCardModule,
+    MatButtonModule,
+    AddProductionRecordDialogComponent,
+    AsyncPipe,
+    DatePipe,
+  ],
   template: `
-    <section class="page">
+    <section class="page" *ngIf="vm$ | async as vm">
       <app-add-production-record-dialog
         *ngIf="showAddDialog"
         (close)="closeAddDialog()"
         (save)="handleRecordSave($event)"
       ></app-add-production-record-dialog>
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <p class="eyebrow">Live records</p>
+            <h2>Firestore: productionRecords</h2>
+          </div>
+          <span class="pill subtle">{{ vm.provinceCards.length }} record(s)</span>
+        </div>
+        <div class="table">
+          <div class="table-head">
+            <span>Month</span>
+            <span class="right">Province</span>
+            <span class="right">Status</span>
+            <span class="right">Updated</span>
+          </div>
+          <div class="table-row" *ngFor="let record of productionRecords$ | async">
+            <span class="cell-label">{{ record.month }}</span>
+            <span class="right">{{ record.province }}</span>
+            <span class="right">{{ record.provinceProductionStatus }}</span>
+            <span class="right">{{ formatCreatedAt(record) | date: 'medium' }}</span>
+          </div>
+          <p class="microcopy" *ngIf="!(productionRecords$ | async)?.length">
+            No records yet. Use "Add new record" to create one.
+          </p>
+        </div>
+      </div>
+
       <div class="page-header">
         <div>
           <p class="eyebrow">Food Manufacturing</p>
@@ -36,15 +116,35 @@ type FoodType = 'Rice' | 'Vegetables' | 'Milk' | 'Child food';
       </div>
 
       <div class="card kpi-grid">
-        <div class="kpi-card" *ngFor="let kpi of kpis">
-          <p class="kpi-label">{{ kpi.label }}</p>
+        <div class="kpi-card">
+          <p class="kpi-label">Total production this month</p>
           <div class="kpi-value-row">
-            <span class="kpi-value">{{ kpi.value }}</span>
-            <span class="kpi-change" [class.positive]="kpi.change.startsWith('+')">
-              {{ kpi.change }}
-            </span>
+            <span class="kpi-value">{{ vm.totalProduction | number }} t</span>
           </div>
-          <p class="kpi-hint">{{ kpi.hint }}</p>
+          <p class="kpi-hint">Across all provinces for {{ vm.month || '—' }}</p>
+        </div>
+        <div class="kpi-card">
+          <p class="kpi-label">Top producing province</p>
+          <div class="kpi-value-row">
+            <span class="kpi-value">{{ vm.topProvince || '—' }}</span>
+          </div>
+          <p class="kpi-hint">
+            {{ vm.topProvinceValue ? (vm.topProvinceValue | number) + ' t' : 'Awaiting data' }}
+          </p>
+        </div>
+        <div class="kpi-card">
+          <p class="kpi-label">Provinces below target</p>
+          <div class="kpi-value-row">
+            <span class="kpi-value">{{ vm.belowTargetCount }}</span>
+          </div>
+          <p class="kpi-hint">Count of provinces under summed targets</p>
+        </div>
+        <div class="kpi-card">
+          <p class="kpi-label">Avg target achievement</p>
+          <div class="kpi-value-row">
+            <span class="kpi-value">{{ vm.avgTargetAchievement | number : '1.0-1' }}%</span>
+          </div>
+          <p class="kpi-hint">Across all food types</p>
         </div>
       </div>
 
@@ -76,8 +176,8 @@ type FoodType = 'Rice' | 'Vegetables' | 'Milk' | 'Child food';
               <div class="map-badges">
                 <div
                   class="badge"
-                  *ngFor="let province of provinces"
-                  [ngClass]="province.status"
+                  *ngFor="let province of vm.provinceCards"
+                  [ngClass]="province.statusClass"
                 >
                   <span class="name">{{ province.name }}</span>
                   <span class="value">{{ province.production | number }} t</span>
@@ -94,10 +194,10 @@ type FoodType = 'Rice' | 'Vegetables' | 'Milk' | 'Child food';
               <button
                 type="button"
                 class="province-chip"
-                *ngFor="let province of provinces"
-                [class.ok]="province.status === 'ok'"
-                [class.medium]="province.status === 'medium'"
-                [class.low]="province.status === 'low'"
+                *ngFor="let province of vm.provinceCards"
+                [class.ok]="province.statusClass === 'ok'"
+                [class.medium]="province.statusClass === 'medium'"
+                [class.low]="province.statusClass === 'low'"
                 [class.active]="province.name === selectedProvinceName"
                 (click)="selectProvince(province.name)"
               >
@@ -113,10 +213,10 @@ type FoodType = 'Rice' | 'Vegetables' | 'Milk' | 'Child food';
           <div class="card-header">
             <div>
               <p class="eyebrow">Province details</p>
-              <h2>{{ selectedProvince.name }}</h2>
-              <p class="lede">{{ selectedProvince.sentiment }}</p>
+              <h2>{{ selectedProvince(vm)?.name || 'Select a province' }}</h2>
+              <p class="lede">{{ selectedProvince(vm)?.sentiment || 'Awaiting data' }}</p>
             </div>
-            <span class="pill">{{ selectedProvince.changeText }}</span>
+            <span class="pill">{{ selectedProvince(vm)?.changeText }}</span>
           </div>
           <div class="table">
             <div class="table-head">
@@ -125,7 +225,7 @@ type FoodType = 'Rice' | 'Vegetables' | 'Milk' | 'Child food';
               <span class="right">Last month</span>
               <span class="right">Change</span>
             </div>
-            <div class="table-row" *ngFor="let item of selectedProvince.breakdown">
+            <div class="table-row" *ngFor="let item of selectedProvince(vm)?.breakdown || []">
               <span class="cell-label">{{ item.type }}</span>
               <span class="right">{{ item.current | number }} t</span>
               <span class="right">{{ item.last | number }} t</span>
@@ -138,8 +238,9 @@ type FoodType = 'Rice' | 'Vegetables' | 'Milk' | 'Child food';
                   {{ item.current >= item.last ? 'trending_up' : 'trending_down' }}
                 </span>
                 {{
-                  ((item.current - item.last) / item.last) * 100
-                    | number : '1.0-1'
+                  item.last
+                    ? (((item.current - item.last) / item.last) * 100 | number : '1.0-1')
+                    : '—'
                 }}%
               </span>
             </div>
@@ -160,7 +261,7 @@ type FoodType = 'Rice' | 'Vegetables' | 'Milk' | 'Child food';
           </div>
           <div class="segmented">
             <button
-              *ngFor="let month of months"
+              *ngFor="let month of vm.months"
               type="button"
               [class.active]="month === selectedMonth"
               (click)="setMonth(month)"
@@ -180,17 +281,17 @@ type FoodType = 'Rice' | 'Vegetables' | 'Milk' | 'Child food';
           </div>
         </div>
         <div class="bar-chart">
-          <div class="bar-row" *ngFor="let item of provinceComparisons[selectedFoodType]">
+          <div class="bar-row" *ngFor="let item of vm.comparisons[selectedFoodType] || []">
             <div class="label">
               <span class="name">{{ item.province }}</span>
-              <span class="target">Target {{ item.target }} kt</span>
+              <span class="target">Target {{ item.target | number }} t</span>
             </div>
             <div class="bar-track">
               <div class="bar" [style.width]="barWidth(item.value)">
-                <span class="value">{{ item.value }} kt</span>
+                <span class="value">{{ item.value | number }} t</span>
               </div>
               <div class="gap" [style.width]="gapWidth(item)" *ngIf="item.value < item.target">
-                Gap {{ item.target - item.value }} kt
+                Gap {{ item.target - item.value | number }} t
               </div>
             </div>
           </div>
@@ -208,7 +309,7 @@ type FoodType = 'Rice' | 'Vegetables' | 'Milk' | 'Child food';
           </p>
         </div>
         <div class="target-grid">
-          <div class="target-item" *ngFor="let item of targetVsActual">
+          <div class="target-item" *ngFor="let item of vm.targetVsActual">
             <div class="target-head">
               <span class="label">{{ item.label }}</span>
               <span class="pill subtle">Gap {{ targetGap(item) }} kt</span>
@@ -219,14 +320,14 @@ type FoodType = 'Rice' | 'Vegetables' | 'Milk' | 'Child food';
                 <div class="track">
                   <div class="fill target" [style.width]="barWidth(item.target)"></div>
                 </div>
-                <span class="value">{{ item.target }} kt</span>
+                <span class="value">{{ item.target | number }} t</span>
               </div>
               <div class="target-bar">
                 <span>Actual</span>
                 <div class="track">
                   <div class="fill actual" [style.width]="barWidth(item.actual)"></div>
                 </div>
-                <span class="value">{{ item.actual }} kt</span>
+                <span class="value">{{ item.actual | number }} t</span>
               </div>
             </div>
           </div>
@@ -879,160 +980,24 @@ type FoodType = 'Rice' | 'Vegetables' | 'Milk' | 'Child food';
   ],
 })
 export class FoodManufacturingComponent {
-  readonly kpis = [
-    {
-      label: 'Total production this month',
-      value: '162,480 t',
-      hint: 'All Sri Lanka - Oct 2025',
-      change: '+6.2%',
-    },
-    {
-      label: 'Top producing province',
-      value: 'Western',
-      hint: '32,400 t - +4.1%',
-      change: '+',
-    },
-    {
-      label: 'Provinces below target',
-      value: '3',
-      hint: 'Central, Uva, Northern',
-      change: '-',
-    },
-    {
-      label: 'Avg target achievement',
-      value: '93%',
-      hint: 'Stretch goal: 98%',
-      change: '+2.3pts',
-    },
-  ];
-
-  readonly provinces = [
-    { name: 'Western', status: 'ok', production: 32400 },
-    { name: 'Central', status: 'medium', production: 18800 },
-    { name: 'Southern', status: 'ok', production: 27600 },
-    { name: 'Northern', status: 'low', production: 14200 },
-    { name: 'Eastern', status: 'medium', production: 20500 },
-    { name: 'North Western', status: 'ok', production: 23100 },
-    { name: 'North Central', status: 'ok', production: 21900 },
-    { name: 'Uva', status: 'low', production: 13800 },
-    { name: 'Sabaragamuwa', status: 'ok', production: 21400 },
-  ];
-
-  readonly provinceBreakdowns = [
-    {
-      name: 'Western',
-      sentiment: 'Production improving',
-      changeText: '+4.1% vs last month',
-      breakdown: [
-        { type: 'Rice', current: 12800, last: 12000 },
-        { type: 'Vegetables', current: 7600, last: 7120 },
-        { type: 'Milk', current: 5400, last: 5200 },
-        { type: 'Child food', current: 3600, last: 3400 },
-      ],
-    },
-    {
-      name: 'Central',
-      sentiment: 'Production dropping',
-      changeText: '-3.2% vs last month',
-      breakdown: [
-        { type: 'Rice', current: 8200, last: 8700 },
-        { type: 'Vegetables', current: 5100, last: 5400 },
-        { type: 'Milk', current: 3600, last: 3800 },
-        { type: 'Child food', current: 1900, last: 1950 },
-      ],
-    },
-    {
-      name: 'Northern',
-      sentiment: 'Production dropping',
-      changeText: '-5.8% vs last month',
-      breakdown: [
-        { type: 'Rice', current: 5200, last: 5600 },
-        { type: 'Vegetables', current: 4100, last: 4400 },
-        { type: 'Milk', current: 2600, last: 2800 },
-        { type: 'Child food', current: 2300, last: 2400 },
-      ],
-    },
-    {
-      name: 'Uva',
-      sentiment: 'Production improving',
-      changeText: '+2.1% vs last month',
-      breakdown: [
-        { type: 'Rice', current: 5200, last: 5100 },
-        { type: 'Vegetables', current: 4100, last: 4050 },
-        { type: 'Milk', current: 2700, last: 2680 },
-        { type: 'Child food', current: 1800, last: 1740 },
-      ],
-    },
-  ];
-
+  readonly productionRecords$: Observable<ProductionRecordDoc[]>;
+  readonly vm$: Observable<ViewModel>;
   readonly foodTypes: FoodType[] = ['Rice', 'Vegetables', 'Milk', 'Child food'];
-  readonly months = ['Aug', 'Sep', 'Oct'];
   selectedFoodType: FoodType = this.foodTypes[0];
-  selectedMonth = 'Oct';
-  selectedProvinceName = this.provinceBreakdowns[0].name;
+  selectedMonth: string | null = null;
+  selectedProvinceName: string | null = null;
   showAddDialog = false;
 
-  readonly provinceComparisons: Record<
-    FoodType,
-    { province: string; value: number; target: number }[]
-  > = {
-    Rice: [
-      { province: 'Western', value: 128, target: 130 },
-      { province: 'Central', value: 82, target: 90 },
-      { province: 'Southern', value: 114, target: 112 },
-      { province: 'Northern', value: 52, target: 70 },
-      { province: 'Eastern', value: 98, target: 102 },
-      { province: 'North Western', value: 105, target: 110 },
-      { province: 'North Central', value: 101, target: 104 },
-      { province: 'Uva', value: 52, target: 60 },
-      { province: 'Sabaragamuwa', value: 96, target: 98 },
-    ],
-    Vegetables: [
-      { province: 'Western', value: 76, target: 78 },
-      { province: 'Central', value: 51, target: 54 },
-      { province: 'Southern', value: 64, target: 62 },
-      { province: 'Northern', value: 41, target: 48 },
-      { province: 'Eastern', value: 55, target: 58 },
-      { province: 'North Western', value: 60, target: 62 },
-      { province: 'North Central', value: 57, target: 59 },
-      { province: 'Uva', value: 41, target: 44 },
-      { province: 'Sabaragamuwa', value: 52, target: 56 },
-    ],
-    Milk: [
-      { province: 'Western', value: 54, target: 56 },
-      { province: 'Central', value: 36, target: 40 },
-      { province: 'Southern', value: 48, target: 50 },
-      { province: 'Northern', value: 26, target: 32 },
-      { province: 'Eastern', value: 33, target: 36 },
-      { province: 'North Western', value: 38, target: 40 },
-      { province: 'North Central', value: 36, target: 38 },
-      { province: 'Uva', value: 27, target: 30 },
-      { province: 'Sabaragamuwa', value: 34, target: 36 },
-    ],
-    'Child food': [
-      { province: 'Western', value: 36, target: 38 },
-      { province: 'Central', value: 19, target: 22 },
-      { province: 'Southern', value: 28, target: 30 },
-      { province: 'Northern', value: 23, target: 26 },
-      { province: 'Eastern', value: 25, target: 28 },
-      { province: 'North Western', value: 28, target: 30 },
-      { province: 'North Central', value: 26, target: 28 },
-      { province: 'Uva', value: 18, target: 20 },
-      { province: 'Sabaragamuwa', value: 25, target: 27 },
-    ],
-  };
+  private readonly selectedMonth$ = new BehaviorSubject<string | null>(null);
 
-  readonly targetVsActual = [
-    { label: 'Rice', target: 130, actual: 124 },
-    { label: 'Vegetables', target: 78, actual: 74 },
-    { label: 'Milk', target: 56, actual: 52 },
-    { label: 'Child food', target: 38, actual: 34 },
-  ];
+  constructor(private firestore: Firestore) {
+    this.productionRecords$ = collectionData(
+      collection(this.firestore, 'productionRecords'),
+      { idField: 'id' }
+    ) as Observable<ProductionRecordDoc[]>;
 
-  get selectedProvince() {
-    return (
-      this.provinceBreakdowns.find((p) => p.name === this.selectedProvinceName) ??
-      this.provinceBreakdowns[0]
+    this.vm$ = combineLatest([this.productionRecords$, this.selectedMonth$]).pipe(
+      map(([records, selectedMonth]) => this.buildViewModel(records, selectedMonth))
     );
   }
 
@@ -1046,6 +1011,7 @@ export class FoodManufacturingComponent {
 
   setMonth(month: string): void {
     this.selectedMonth = month;
+    this.selectedMonth$.next(month);
   }
 
   openAddDialog(): void {
@@ -1057,9 +1023,8 @@ export class FoodManufacturingComponent {
   }
 
   handleRecordSave(record: NewProductionRecord): void {
-    // TODO: integrate with data store/API; for now keep selection and close dialog
+    // TODO: integrate with data store/API; Firestore write handled in dialog
     console.log('New production record submitted', record);
-    this.showAddDialog = false;
   }
 
   barWidth(value: number): string {
@@ -1075,5 +1040,301 @@ export class FoodManufacturingComponent {
 
   targetGap(item: { target: number; actual: number }): number {
     return item.target - item.actual;
+  }
+
+  formatCreatedAt(record: ProductionRecordDoc): Date | null {
+    return record.createdAt && typeof record.createdAt.toDate === 'function'
+      ? record.createdAt.toDate()
+      : null;
+  }
+
+  selectedProvince(vm: ViewModel): ProvinceBreakdown | undefined {
+    const match =
+      vm.provinceBreakdowns.find((p) => p.name === this.selectedProvinceName) ||
+      vm.provinceBreakdowns[0];
+    if (!this.selectedProvinceName && match) {
+      this.selectedProvinceName = match.name;
+    }
+    return match;
+  }
+
+  private buildViewModel(
+    records: ProductionRecordDoc[],
+    selectedMonth: string | null
+  ): ViewModel {
+    const months = Array.from(new Set(records.map((r) => r.month))).sort(
+      (a, b) => this.monthIndex(a) - this.monthIndex(b)
+    );
+    const month =
+      selectedMonth && months.includes(selectedMonth) ? selectedMonth : months.at(-1) ?? null;
+    if (!month) {
+      return {
+        months,
+        month: null,
+        provinceCards: [],
+        provinceBreakdowns: [],
+        comparisons: {
+          Rice: [],
+          Vegetables: [],
+          Milk: [],
+          'Child food': [],
+        },
+        targetVsActual: [],
+        totalProduction: 0,
+        topProvince: undefined,
+        topProvinceValue: undefined,
+        belowTargetCount: 0,
+        avgTargetAchievement: 0,
+      };
+    }
+
+    const monthRecords = records.filter((r) => r.month === month);
+
+    const provinceCards = monthRecords.map((r) => ({
+      name: r.province,
+      statusClass: this.statusClass(r.provinceProductionStatus),
+      production: this.totalProduction(r),
+    }));
+
+    const provinceBreakdowns = monthRecords.map((r) => ({
+      name: r.province,
+      sentiment: this.sentimentText(r.provinceProductionStatus),
+      changeText: this.changeText(r.provinceProductionStatus),
+      breakdown: this.buildBreakdown(records, r, month),
+    }));
+
+    const comparisons = this.buildComparisons(monthRecords);
+    const targetVsActual = this.buildTargets(monthRecords);
+
+    const totalProduction = monthRecords.reduce(
+      (sum, r) => sum + this.totalProduction(r),
+      0
+    );
+    const topProvinceEntry = provinceCards.reduce(
+      (top, p) => (p.production > (top?.production ?? -1) ? p : top),
+      undefined as ProvinceCard | undefined
+    );
+
+    const belowTargetCount = monthRecords.filter((r) => this.isBelowTarget(r)).length;
+    const avgTargetAchievement = this.avgTargetAchievement(monthRecords);
+
+    if (!this.selectedMonth && month) {
+      this.selectedMonth = month;
+    }
+
+    return {
+      months,
+      month,
+      provinceCards,
+      provinceBreakdowns,
+      comparisons,
+      targetVsActual,
+      totalProduction,
+      topProvince: topProvinceEntry?.name,
+      topProvinceValue: topProvinceEntry?.production,
+      belowTargetCount,
+      avgTargetAchievement,
+    };
+  }
+
+  private buildBreakdown(
+    records: ProductionRecordDoc[],
+    record: ProductionRecordDoc,
+    month: string
+  ): { type: FoodType; current: number; last: number }[] {
+    const prevMonth = this.previousMonth(records, record.province, month);
+    return [
+      {
+        type: 'Rice',
+        current: record.riceProduction ?? 0,
+        last: prevMonth?.riceProduction ?? 0,
+      },
+      {
+        type: 'Vegetables',
+        current: record.vegetableProduction ?? 0,
+        last: prevMonth?.vegetableProduction ?? 0,
+      },
+      {
+        type: 'Milk',
+        current: record.milkProduction ?? 0,
+        last: prevMonth?.milkProduction ?? 0,
+      },
+      {
+        type: 'Child food',
+        current: record.childFoodProduction ?? 0,
+        last: prevMonth?.childFoodProduction ?? 0,
+      },
+    ];
+  }
+
+  private buildComparisons(
+    monthRecords: ProductionRecordDoc[]
+  ): Record<FoodType, ComparisonItem[]> {
+    const comparisons: Record<FoodType, ComparisonItem[]> = {
+      Rice: [],
+      Vegetables: [],
+      Milk: [],
+      'Child food': [],
+    };
+
+    monthRecords.forEach((r) => {
+      comparisons.Rice.push({
+        province: r.province,
+        value: r.riceProduction ?? 0,
+        target: r.riceTarget ?? 0,
+      });
+      comparisons.Vegetables.push({
+        province: r.province,
+        value: r.vegetableProduction ?? 0,
+        target: r.vegetableTarget ?? 0,
+      });
+      comparisons.Milk.push({
+        province: r.province,
+        value: r.milkProduction ?? 0,
+        target: r.milkTarget ?? 0,
+      });
+      comparisons['Child food'].push({
+        province: r.province,
+        value: r.childFoodProduction ?? 0,
+        target: r.childFoodTarget ?? 0,
+      });
+    });
+
+    return comparisons;
+  }
+
+  private buildTargets(monthRecords: ProductionRecordDoc[]): TargetItem[] {
+    const totals = {
+      Rice: { target: 0, actual: 0 },
+      Vegetables: { target: 0, actual: 0 },
+      Milk: { target: 0, actual: 0 },
+      'Child food': { target: 0, actual: 0 },
+    };
+
+    monthRecords.forEach((r) => {
+      totals.Rice.target += r.riceTarget ?? 0;
+      totals.Rice.actual += r.riceProduction ?? 0;
+      totals.Vegetables.target += r.vegetableTarget ?? 0;
+      totals.Vegetables.actual += r.vegetableProduction ?? 0;
+      totals.Milk.target += r.milkTarget ?? 0;
+      totals.Milk.actual += r.milkProduction ?? 0;
+      totals['Child food'].target += r.childFoodTarget ?? 0;
+      totals['Child food'].actual += r.childFoodProduction ?? 0;
+    });
+
+    return (Object.keys(totals) as FoodType[]).map((label) => ({
+      label,
+      target: totals[label].target,
+      actual: totals[label].actual,
+    }));
+  }
+
+  private totalProduction(r: ProductionRecordDoc): number {
+    return (
+      (r.riceProduction ?? 0) +
+      (r.vegetableProduction ?? 0) +
+      (r.milkProduction ?? 0) +
+      (r.childFoodProduction ?? 0)
+    );
+  }
+
+  private statusClass(status: string): 'ok' | 'medium' | 'low' {
+    switch (status) {
+      case 'GOOD':
+        return 'ok';
+      case 'MEDIUM':
+        return 'medium';
+      case 'LOW':
+      default:
+        return 'low';
+    }
+  }
+
+  private sentimentText(status: string): string {
+    switch (status) {
+      case 'GOOD':
+        return 'Production improving';
+      case 'MEDIUM':
+        return 'Production steady';
+      case 'LOW':
+      default:
+        return 'Production dropping';
+    }
+  }
+
+  private changeText(status: string): string {
+    switch (status) {
+      case 'GOOD':
+        return 'Trending up';
+      case 'MEDIUM':
+        return 'Flat vs last month';
+      case 'LOW':
+      default:
+        return 'Trending down';
+    }
+  }
+
+  private previousMonth(
+    records: ProductionRecordDoc[],
+    province: string,
+    month: string
+  ): ProductionRecordDoc | undefined {
+    const orderedMonths = Array.from(new Set(records.map((r) => r.month))).sort(
+      (a, b) => this.monthIndex(a) - this.monthIndex(b)
+    );
+    const currentIndex = orderedMonths.indexOf(month);
+    if (currentIndex <= 0) {
+      return undefined;
+    }
+    const prevMonth = orderedMonths[currentIndex - 1];
+    return records.find((r) => r.province === province && r.month === prevMonth);
+  }
+
+  private monthIndex(month: string): number {
+    const order = [
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December',
+    ];
+    const idx = order.indexOf(month);
+    return idx === -1 ? 99 : idx;
+  }
+
+  private isBelowTarget(record: ProductionRecordDoc): boolean {
+    const actual = this.totalProduction(record);
+    const target =
+      (record.riceTarget ?? 0) +
+      (record.vegetableTarget ?? 0) +
+      (record.milkTarget ?? 0) +
+      (record.childFoodTarget ?? 0);
+    return target > 0 && actual < target;
+  }
+
+  private avgTargetAchievement(records: ProductionRecordDoc[]): number {
+    const ratios: number[] = [];
+    records.forEach((r) => {
+      const actual = this.totalProduction(r);
+      const target =
+        (r.riceTarget ?? 0) +
+        (r.vegetableTarget ?? 0) +
+        (r.milkTarget ?? 0) +
+        (r.childFoodTarget ?? 0);
+      if (target > 0) {
+        ratios.push(actual / target);
+      }
+    });
+    if (!ratios.length) {
+      return 0;
+    }
+    return (ratios.reduce((sum, r) => sum + r, 0) / ratios.length) * 100;
   }
 }
