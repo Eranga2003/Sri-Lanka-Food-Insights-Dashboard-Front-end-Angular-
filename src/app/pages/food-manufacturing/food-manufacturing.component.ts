@@ -2,13 +2,24 @@ import { CommonModule } from '@angular/common';
 import { Component } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
+import {
+  AddProductionRecordDialogComponent,
+  NewProductionRecord,
+} from './add-production-record-dialog.component';
+
+type FoodType = 'Rice' | 'Vegetables' | 'Milk' | 'Child food';
 
 @Component({
   selector: 'app-food-manufacturing',
   standalone: true,
-  imports: [CommonModule, MatCardModule, MatButtonModule],
+  imports: [CommonModule, MatCardModule, MatButtonModule, AddProductionRecordDialogComponent],
   template: `
     <section class="page">
+      <app-add-production-record-dialog
+        *ngIf="showAddDialog"
+        (close)="closeAddDialog()"
+        (save)="handleRecordSave($event)"
+      ></app-add-production-record-dialog>
       <div class="page-header">
         <div>
           <p class="eyebrow">Food Manufacturing</p>
@@ -20,7 +31,7 @@ import { MatCardModule } from '@angular/material/card';
         </div>
         <div class="header-actions">
           <button class="ghost-btn">Export snapshot</button>
-          <button mat-raised-button color="primary">Add new record</button>
+          <button mat-raised-button color="primary" (click)="openAddDialog()">Add new record</button>
         </div>
       </div>
 
@@ -954,14 +965,15 @@ export class FoodManufacturingComponent {
     },
   ];
 
-  readonly foodTypes = ['Rice', 'Vegetables', 'Milk', 'Child food'];
+  readonly foodTypes: FoodType[] = ['Rice', 'Vegetables', 'Milk', 'Child food'];
   readonly months = ['Aug', 'Sep', 'Oct'];
-  selectedFoodType = this.foodTypes[0];
+  selectedFoodType: FoodType = this.foodTypes[0];
   selectedMonth = 'Oct';
   selectedProvinceName = this.provinceBreakdowns[0].name;
+  showAddDialog = false;
 
   readonly provinceComparisons: Record<
-    string,
+    FoodType,
     { province: string; value: number; target: number }[]
   > = {
     Rice: [
@@ -1028,12 +1040,26 @@ export class FoodManufacturingComponent {
     this.selectedProvinceName = name;
   }
 
-  setFoodType(type: string): void {
+  setFoodType(type: FoodType): void {
     this.selectedFoodType = type;
   }
 
   setMonth(month: string): void {
     this.selectedMonth = month;
+  }
+
+  openAddDialog(): void {
+    this.showAddDialog = true;
+  }
+
+  closeAddDialog(): void {
+    this.showAddDialog = false;
+  }
+
+  handleRecordSave(record: NewProductionRecord): void {
+    // TODO: integrate with data store/API; for now keep selection and close dialog
+    console.log('New production record submitted', record);
+    this.showAddDialog = false;
   }
 
   barWidth(value: number): string {
